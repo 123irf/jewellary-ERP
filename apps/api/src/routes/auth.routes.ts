@@ -16,6 +16,18 @@ const ACCESS_TOKEN_EXPIRY = '15m';
 const REFRESH_TOKEN_DAYS = 7;
 const LOCKOUT_THRESHOLD = 5;
 const LOCKOUT_DURATION_MS = 15 * 60 * 1000; // 15 minutes
+const IS_PROD = process.env.NODE_ENV === 'production';
+
+/** Cookie options that work for both same-origin (dev) and cross-origin (prod) */
+function refreshCookieOptions(maxAge?: number) {
+  return {
+    httpOnly: true,
+    secure: IS_PROD,
+    sameSite: IS_PROD ? ('none' as const) : ('strict' as const),
+    maxAge: maxAge ?? REFRESH_TOKEN_DAYS * 24 * 60 * 60 * 1000,
+    path: '/api/v1/auth',
+  };
+}
 
 // Per-IP rate limit on login: 10 attempts per 5 minutes
 const loginRateLimiter = rateLimit({
@@ -103,13 +115,7 @@ authRouter.post('/login', loginRateLimiter, validate(loginSchema), async (req, r
     const accessToken = generateAccessToken({ id: user.id, role: user.role, name: user.name });
 
     // Set refresh token as httpOnly cookie
-    res.cookie('refreshToken', refreshToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: REFRESH_TOKEN_DAYS * 24 * 60 * 60 * 1000,
-      path: '/api/v1/auth',
-    });
+    res.cookie('refreshToken', refreshToken, refreshCookieOptions());
 
     // Audit log
     await prisma.auditLog.create({
@@ -164,7 +170,7 @@ authRouter.post('/refresh', async (req, res, next) => {
     }
 
     if (!matchedUser) {
-      res.clearCookie('refreshToken', { path: '/api/v1/auth' });
+      res.clearCookie('refreshToken', refreshCookieOptions(0));
       res.status(401).json({
         ok: false,
         error: { code: 'UNAUTHORIZED', message: 'Invalid refresh token' },
@@ -187,13 +193,7 @@ authRouter.post('/refresh', async (req, res, next) => {
       name: matchedUser.name,
     });
 
-    res.cookie('refreshToken', newRefreshToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: REFRESH_TOKEN_DAYS * 24 * 60 * 60 * 1000,
-      path: '/api/v1/auth',
-    });
+    res.cookie('refreshToken', newRefreshToken, refreshCookieOptions());
 
     res.json({
       ok: true,
@@ -216,7 +216,7 @@ authRouter.post('/logout', authenticate, async (req, res, next) => {
       data: { refreshTokenHash: null },
     });
 
-    res.clearCookie('refreshToken', { path: '/api/v1/auth' });
+    res.clearCookie('refreshToken', refreshCookieOptions(0));
 
     await prisma.auditLog.create({
       data: {

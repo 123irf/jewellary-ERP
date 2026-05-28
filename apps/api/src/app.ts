@@ -16,6 +16,11 @@ import { auditLogRouter } from './routes/auditLog.routes.js';
 
 export const app: Express = express();
 
+// Trust proxy in production (Render, Railway, etc.)
+if (process.env.NODE_ENV === 'production') {
+  app.set('trust proxy', 1);
+}
+
 // Global middleware
 app.use(requestId);
 app.use(pinoHttp);
