@@ -1,0 +1,432 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ───────────────────────────────────────────────────────
+
+enum UserRole {
+  ADMIN
+  STAFF
+}
+
+enum GoldPurity {
+  K24
+  K22
+  K18
+  K14
+}
+
+enum VendorTxnType {
+  OPENING_BALANCE
+  PURCHASE
+  RETURN
+  PAYMENT
+  ADVANCE
+  CREDIT_NOTE
+  DEBIT_NOTE
+  ADJUSTMENT
+}
+
+enum VendorTxnDirection {
+  CREDIT
+  DEBIT
+}
+
+enum PaymentMode {
+  CASH
+  UPI
+  CARD
+  CREDIT
+}
+
+enum SaleStatus {
+  COMPLETED
+  VOIDED
+}
+
+enum DueStatus {
+  PENDING
+  PARTIAL
+  CLEARED
+  VOIDED
+}
+
+enum StockMovementType {
+  OPENING
+  PURCHASE
+  RETURN_OUT
+  SALE
+  VOID_REVERSAL
+  CUSTOMER_RETURN
+  ADJUSTMENT_IN
+  ADJUSTMENT_OUT
+  DAMAGE
+  AUDIT_CORRECTION
+}
+
+// ─── Auth ────────────────────────────────────────────────────────
+
+model User {
+  id                String    @id @default(cuid())
+  name              String
+  email             String    @unique
+  passwordHash      String
+  role              UserRole
+
+  isActive          Boolean   @default(true)
+  failedLoginCount  Int       @default(0)
+  lockedUntil       DateTime?
+
+  refreshTokenHash  String?
+  lastLoginAt       DateTime?
+  passwordChangedAt DateTime  @default(now())
+
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  createdById       String?
+  createdBy         User?     @relation("UserCreator", fields: [createdById], references: [id])
+  createdUsers      User[]    @relation("UserCreator")
+
+  // Inverse relations
+  products          Product[] @relation("ProductCreator")
+  sales             Sale[]
+  vendorTxns        VendorTransaction[]
+  duePayments       CustomerDuePayment[]
+  stockMovements    StockMovement[]
+  goldRates         GoldRate[]
+  auditLogs         AuditLog[]
+
+  @@index([email])
+  @@index([role, isActive])
+}
+
+// ─── Inventory ───────────────────────────────────────────────────
+
+model Category {
+  id          String    @id @default(cuid())
+  name        String    @unique
+  code        String    @unique // short code for SKU generation e.g. "RNG", "BNG"
+  description String?
+  products    Product[]
+  createdAt   DateTime  @default(now())
+}
+
+model Product {
+  id                String           @id @default(cuid())
+  sku               String           @unique
+  barcode           String?          @unique
+  name              String
+  categoryId        String
+  category          Category         @relation(fields: [categoryId], references: [id])
+
+  // Weights (grams, 3-decimal precision)
+  grossWeight       Decimal          @db.Decimal(10, 3)
+  netWeight         Decimal          @db.Decimal(10, 3)
+  stoneWeight       Decimal          @db.Decimal(10, 3) @default(0)
+
+  // Pricing inputs
+  goldPurity        GoldPurity
+  wastagePct        Decimal          @db.Decimal(5, 2)
+  makingChargesPct  Decimal          @db.Decimal(5, 2) @default(0)
+  stoneRatePerCt    Decimal?         @db.Decimal(12, 2)
+  purchasePrice     Decimal          @db.Decimal(12, 2)
+
+  // Stock
+  currentStock      Int              @default(0)
+  reorderLevel      Int              @default(2)
+
+  // Vendor
+  vendorId          String
+  vendor            Vendor           @relation(fields: [vendorId], references: [id])
+
+  // Soft delete
+  isActive          Boolean          @default(true)
+
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+  createdById       String
+  createdBy         User             @relation("ProductCreator", fields: [createdById], references: [id])
+
+  movements         StockMovement[]
+  saleItems         SaleItem[]
+  vendorTxnItems    VendorTransactionItem[]
+
+  @@index([categoryId])
+  @@index([vendorId])
+  @@index([isActive, currentStock])
+}
+
+model GoldRate {
+  id            String     @id @default(cuid())
+  purity        GoldPurity
+  ratePerGm     Decimal    @db.Decimal(12, 2)
+  effectiveFrom DateTime   @default(now())
+  setBy         String
+  user          User       @relation(fields: [setBy], references: [id])
+
+  @@index([purity, effectiveFrom])
+}
+
+// ─── Vendor Ledger ───────────────────────────────────────────────
+
+model Vendor {
+  id              String   @id @default(cuid())
+  code            String   @unique
+  name            String
+  contactPerson   String?
+  phone           String
+  email           String?
+  gstin           String?
+  address         String?
+
+  runningBalance  Decimal  @db.Decimal(14, 2) @default(0)
+
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  products        Product[]
+  transactions    VendorTransaction[]
+
+  @@index([isActive])
+  @@index([name])
+}
+
+model VendorTransaction {
+  id             String              @id @default(cuid())
+  vendorId       String
+  vendor         Vendor              @relation(fields: [vendorId], references: [id])
+
+  txnType        VendorTxnType
+  direction      VendorTxnDirection
+  amount         Decimal             @db.Decimal(14, 2)
+
+  balanceAfter   Decimal             @db.Decimal(14, 2)
+
+  referenceNo    String?
+  notes          String?
+  txnDate        DateTime            @default(now())
+
+  createdById    String
+  createdBy      User                @relation(fields: [createdById], references: [id])
+  createdAt      DateTime            @default(now())
+
+  items          VendorTransactionItem[]
+  stockMovements StockMovement[]
+
+  @@index([vendorId, txnDate])
+  @@index([txnType])
+}
+
+model VendorTransactionItem {
+  id                  String            @id @default(cuid())
+  vendorTxnId         String
+  vendorTransaction   VendorTransaction @relation(fields: [vendorTxnId], references: [id], onDelete: Cascade)
+
+  productId           String
+  product             Product           @relation(fields: [productId], references: [id])
+
+  quantity            Int
+  ratePerUnit         Decimal           @db.Decimal(12, 2)
+  lineTotal           Decimal           @db.Decimal(14, 2)
+
+  @@index([productId])
+}
+
+// ─── POS / Billing ───────────────────────────────────────────────
+
+model Customer {
+  id           String        @id @default(cuid())
+  name         String
+  phone        String        @unique
+  email        String?
+  gstin        String?
+  address      String?
+  stateCode    String?
+
+  totalDue     Decimal       @db.Decimal(14, 2) @default(0)
+
+  createdAt    DateTime      @default(now())
+  sales        Sale[]
+  dues         CustomerDue[]
+  credits      CustomerCredit[]
+
+  @@index([phone])
+  @@index([totalDue])
+}
+
+model Sale {
+  id              String       @id @default(cuid())
+  invoiceNumber   String       @unique
+
+  customerId      String?
+  customer        Customer?    @relation(fields: [customerId], references: [id])
+  customerWalkIn  Boolean      @default(false)
+
+  subtotal        Decimal      @db.Decimal(14, 2)
+  totalDiscount   Decimal      @db.Decimal(14, 2) @default(0)
+  taxableAmount   Decimal      @db.Decimal(14, 2)
+  cgst            Decimal      @db.Decimal(14, 2) @default(0)
+  sgst            Decimal      @db.Decimal(14, 2) @default(0)
+  igst            Decimal      @db.Decimal(14, 2) @default(0)
+  grandTotal      Decimal      @db.Decimal(14, 2)
+
+  amountPaid      Decimal      @db.Decimal(14, 2)
+  creditAmount    Decimal      @db.Decimal(14, 2) @default(0)
+
+  status          SaleStatus   @default(COMPLETED)
+  notes           String?
+
+  createdById     String
+  createdBy       User         @relation(fields: [createdById], references: [id])
+  createdAt       DateTime     @default(now())
+
+  items           SaleItem[]
+  payments        Payment[]
+  movements       StockMovement[]
+  due             CustomerDue?
+
+  @@index([customerId])
+  @@index([createdAt])
+  @@index([status])
+}
+
+model SaleItem {
+  id                String   @id @default(cuid())
+  saleId            String
+  sale              Sale     @relation(fields: [saleId], references: [id], onDelete: Cascade)
+
+  productId         String
+  product           Product  @relation(fields: [productId], references: [id])
+
+  productName       String
+  sku               String
+  goldPurity        String
+  goldRateAtSale    Decimal  @db.Decimal(12, 2)
+  netWeight         Decimal  @db.Decimal(10, 3)
+  stoneWeight       Decimal  @db.Decimal(10, 3)
+  wastagePct        Decimal  @db.Decimal(5, 2)
+  makingChargesPct  Decimal  @db.Decimal(5, 2)
+
+  quantity          Int
+  unitPrice         Decimal  @db.Decimal(14, 2)
+  lineDiscount      Decimal  @db.Decimal(14, 2) @default(0)
+  lineTotal         Decimal  @db.Decimal(14, 2)
+
+  @@index([productId])
+}
+
+model Payment {
+  id         String      @id @default(cuid())
+  saleId     String
+  sale       Sale        @relation(fields: [saleId], references: [id], onDelete: Cascade)
+
+  mode       PaymentMode
+  amount     Decimal     @db.Decimal(14, 2)
+  reference  String?
+  createdAt  DateTime    @default(now())
+}
+
+// ─── Customer Dues ───────────────────────────────────────────────
+
+model CustomerDue {
+  id              String                @id @default(cuid())
+  customerId      String
+  customer        Customer              @relation(fields: [customerId], references: [id])
+  saleId          String                @unique
+  sale            Sale                  @relation(fields: [saleId], references: [id])
+
+  originalAmount  Decimal               @db.Decimal(14, 2)
+  paidAmount      Decimal               @db.Decimal(14, 2) @default(0)
+  balanceAmount   Decimal               @db.Decimal(14, 2)
+
+  status          DueStatus             @default(PENDING)
+  dueDate         DateTime?
+
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+  clearedAt       DateTime?
+
+  payments        CustomerDuePayment[]
+
+  @@index([customerId, status])
+  @@index([status, dueDate])
+}
+
+model CustomerDuePayment {
+  id           String        @id @default(cuid())
+  dueId        String
+  due          CustomerDue   @relation(fields: [dueId], references: [id], onDelete: Cascade)
+
+  mode         PaymentMode
+  amount       Decimal       @db.Decimal(14, 2)
+  reference    String?
+  notes        String?
+
+  receivedById String
+  receivedBy   User          @relation(fields: [receivedById], references: [id])
+  createdAt    DateTime      @default(now())
+}
+
+model CustomerCredit {
+  id           String     @id @default(cuid())
+  customerId   String
+  customer     Customer   @relation(fields: [customerId], references: [id])
+  amount       Decimal    @db.Decimal(14, 2)
+  source       String
+  sourceRefId  String?
+  notes        String?
+  createdAt    DateTime   @default(now())
+  isActive     Boolean    @default(true)
+}
+
+// ─── Stock Movement ──────────────────────────────────────────────
+
+model StockMovement {
+  id              String             @id @default(cuid())
+  productId       String
+  product         Product            @relation(fields: [productId], references: [id])
+
+  type            StockMovementType
+  quantityDelta   Int
+  stockAfter      Int
+
+  saleId          String?
+  sale            Sale?              @relation(fields: [saleId], references: [id])
+  vendorTxnId     String?
+  vendorTransaction VendorTransaction? @relation(fields: [vendorTxnId], references: [id])
+
+  notes           String?
+  createdById     String
+  createdBy       User               @relation(fields: [createdById], references: [id])
+  createdAt       DateTime           @default(now())
+
+  @@index([productId, createdAt])
+  @@index([type, createdAt])
+  @@index([saleId])
+  @@index([vendorTxnId])
+}
+
+// ─── Audit Log ───────────────────────────────────────────────────
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id])
+  action     String
+  entity     String
+  entityId   String
+  before     Json?
+  after      Json?
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  @@index([entity, entityId])
+  @@index([userId, createdAt])
+}
